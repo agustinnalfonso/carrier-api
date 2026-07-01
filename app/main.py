@@ -226,6 +226,8 @@ def get_metrics(
     db: Session = Depends(get_db),
     _: str = Depends(require_api_key),
 ):
+    return compute_metrics(db)
+def compute_metrics(db: Session) -> dict:
     total_calls = db.query(func.count(Call.id)).scalar() or 0
 
     outcome_counts = dict(
@@ -278,11 +280,16 @@ def get_metrics(
         "avg_final_agreed_rate": float(avg_final_rate) if avg_final_rate else None,
         "decline_reasons": decline_reasons,
     }
-
-
+    
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     return FileResponse("app/dashboard.html")
+    
+@app.get("/dashboard/data")
+def get_dashboard_data(db: Session = Depends(get_db)):
+    # Intentionally unauthenticated — read-only aggregate metrics only,
+    # no carrier PII (MC numbers, names) or raw call records are exposed here.
+    return compute_metrics(db)
 
 @app.get("/health")
 def health():
