@@ -203,15 +203,34 @@ async function renderMap(topOriginCities) {
   svg.selectAll('circle').remove();
 
   const entries = Object.entries(topOriginCities || {});
-  const maxCount = Math.max(1, ...entries.map(([, c]) => c));
 
-  const points = entries
-    .map(([city, count]) => {
-      const coords = CITY_COORDS[city.toLowerCase()];
+  // Origin strings come as "City, ST" (e.g. "Chicago, IL"). Match on the
+  // city part only, case-insensitively, against the CITY_COORDS lookup.
+  function cityKey(fullName) {
+    return fullName.split(',')[0].trim().toLowerCase().replace(/\./g, '');
+  }
+
+  // Aggregate counts in case two differently-labeled origins resolve to the
+  // same city key (e.g. "Chicago, IL" and "chicago, il" would already be
+  // normalized upstream, but this also merges same-named cities in
+  // different states onto a single map point as a simplification).
+  const aggregated = {};
+  for (const [city, count] of entries) {
+    const key = cityKey(city);
+    if (!aggregated[key]) aggregated[key] = { count: 0, labels: [] };
+    aggregated[key].count += count;
+    aggregated[key].labels.push(city);
+  }
+
+  const maxCount = Math.max(1, ...Object.values(aggregated).map(v => v.count));
+
+  const points = Object.entries(aggregated)
+    .map(([key, data]) => {
+      const coords = CITY_COORDS[key];
       if (!coords) return null;
       const projected = mapProjection(coords);
       if (!projected) return null;
-      return { city, count, x: projected[0], y: projected[1] };
+      return { city: data.labels.join(' / '), count: data.count, x: projected[0], y: projected[1] };
     })
     .filter(Boolean);
 
