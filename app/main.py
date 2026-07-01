@@ -9,6 +9,10 @@ from datetime import datetime
 from typing import Optional
 import os
 from dotenv import load_dotenv
+from fastapi.responses import FileResponse, HTMLResponse
+from sqlalchemy import Boolean, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 
 load_dotenv()
 
@@ -42,6 +46,30 @@ class Load(Base):
     dimensions        = Column(String(100))
     status            = Column(String(20), default="available")
 
+class Call(Base):
+    __tablename__ = "calls"
+    id                     = Column(Integer, primary_key=True, autoincrement=True)
+    call_id                = Column(String(100), unique=True, nullable=False)
+    run_id                 = Column(String(100))
+    call_duration_seconds  = Column(Numeric(10, 2))
+    mc_number              = Column(String(20))
+    carrier_name           = Column(String(200))
+    carrier_eligible       = Column(Boolean)
+    load_id                = Column(String(20))
+    origin                 = Column(String(100))
+    destination            = Column(String(100))
+    equipment_type         = Column(String(50))
+    loadboard_rate         = Column(Numeric(10, 2))
+    carrier_first_offer    = Column(Numeric(10, 2))
+    final_agreed_rate      = Column(Numeric(10, 2))
+    negotiation_rounds     = Column(Integer)
+    decline_reason         = Column(Text)
+    outcome                = Column(String(50))
+    outcome_reason         = Column(Text)
+    sentiment              = Column(String(50))
+    sentiment_reason       = Column(Text)
+    created_at             = Column(DateTime, default=datetime.utcnow)
+
 def get_db():
     db = SessionLocal()
     try:
@@ -68,6 +96,28 @@ class LoadOut(BaseModel):
     dimensions: Optional[str] = None
     status: Optional[str] = None
 
+
+class CallIn(BaseModel):
+    call_id: str
+    run_id: Optional[str] = None
+    call_duration_seconds: Optional[float] = None
+    mc_number: Optional[str] = None
+    carrier_name: Optional[str] = None
+    carrier_eligible: Optional[bool] = None
+    load_id: Optional[str] = None
+    origin: Optional[str] = None
+    destination: Optional[str] = None
+    equipment_type: Optional[str] = None
+    loadboard_rate: Optional[float] = None
+    carrier_first_offer: Optional[float] = None
+    final_agreed_rate: Optional[float] = None
+    negotiation_rounds: Optional[int] = None
+    decline_reason: Optional[str] = None
+    outcome: Optional[str] = None
+    outcome_reason: Optional[str] = None
+    sentiment: Optional[str] = None
+    sentiment_reason: Optional[str] = None
+    
     class Config:
         from_attributes = True
 
@@ -156,6 +206,83 @@ def search_loads(
 
     return results
 
+@app.post("/calls", status_code=201)
+def store_call(
+    payload: CallIn,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_api_key),
+):
+    data = payload.model_dump()
+    stmt = pg_insert(Call).values(**data)
+    update_cols = {c: stmt.excluded[c] for c in data if c != "call_id"}
+    stmt = stmt.on_conflict_do_update(index_elements=["call_id"], set_=update_cols)
+    db.execute(stmt)
+    db.commit()
+    return {"status": "ok", "call_id": payload.call_id}
+
+
+@app.get("/metrics")
+def get_metrics(
+    db: Session = Depends(get_db),
+    _: str = Depends(require_api_key),
+):
+    total_calls = db.query(func.count(Call.id)).scalar() or 0
+
+    outcome_counts = dict(
+        db.query(Call.outcome, func.count(Call.id))
+        .group_by(Call.outcome)
+        .all()
+    )
+
+    sentiment_counts = dict(
+        db.query(Call.sentiment, func.count(Call.id))
+        .group_by(Call.sentiment)
+        .all()
+    )
+
+    booked_calls = outcome_counts.get("Booked", 0)
+    booking_rate = round((booked_calls / total_calls) * 100, 1) if total_calls else 0
+
+    ineligible_calls = (
+        db.query(func.count(Call.id)).filter(Call.carrier_eligible == False).scalar() or 0
+    )
+    eligibility_rate = (
+        round(((total_calls - ineligible_calls) / total_calls) * 100, 1) if total_calls else 0
+    )
+
+    avg_duration = db.query(func.avg(Call.call_duration_seconds)).scalar()
+    avg_negotiation_rounds = db.query(func.avg(Call.negotiation_rounds)).scalar()
+    avg_loadboard_rate = db.query(func.avg(Call.loadboard_rate)).scalar()
+    avg_final_rate = (
+        db.query(func.avg(Call.final_agreed_rate))
+        .filter(Call.final_agreed_rate.isnot(None))
+        .scalar()
+    )
+
+    decline_reasons = dict(
+        db.query(Call.decline_reason, func.count(Call.id))
+        .filter(Call.decline_reason.isnot(None))
+        .group_by(Call.decline_reason)
+        .all()
+    )
+
+    return {
+        "total_calls": total_calls,
+        "booking_rate_pct": booking_rate,
+        "eligibility_rate_pct": eligibility_rate,
+        "outcome_breakdown": outcome_counts,
+        "sentiment_breakdown": sentiment_counts,
+        "avg_call_duration_seconds": float(avg_duration) if avg_duration else None,
+        "avg_negotiation_rounds": float(avg_negotiation_rounds) if avg_negotiation_rounds else None,
+        "avg_loadboard_rate": float(avg_loadboard_rate) if avg_loadboard_rate else None,
+        "avg_final_agreed_rate": float(avg_final_rate) if avg_final_rate else None,
+        "decline_reasons": decline_reasons,
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard():
+    return FileResponse("app/dashboard.html")
 
 @app.get("/health")
 def health():
