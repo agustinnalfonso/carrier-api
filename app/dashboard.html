@@ -4,18 +4,28 @@
 <meta charset="UTF-8" />
 <title>Carrier Sales Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
 <style>
   body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: #0f1117; color: #e6e6e6; margin: 0; padding: 24px; }
   h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 15px; color: #cfd3da; margin: 32px 0 12px 0; }
   .sub { color: #9aa0a6; margin-bottom: 24px; font-size: 13px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
-  .card { background: #1a1d27; border: 1px solid #2a2e3a; border-radius: 10px; padding: 16px; }
-  .card .label { font-size: 12px; color: #9aa0a6; text-transform: uppercase; letter-spacing: 0.04em; }
-  .card .value { font-size: 28px; font-weight: 600; margin-top: 6px; }
-  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 8px; }
+  .card { background: #1a1d27; border: 1px solid #2a2e3a; border-radius: 10px; padding: 14px 16px; }
+  .card .label { font-size: 11px; color: #9aa0a6; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .value { font-size: 24px; font-weight: 600; margin-top: 6px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
   .chart-card { background: #1a1d27; border: 1px solid #2a2e3a; border-radius: 10px; padding: 16px; }
+  .chart-card.wide { grid-column: 1 / -1; }
   .chart-card h3 { margin: 0 0 12px 0; font-size: 14px; color: #cfd3da; }
+  .chart-card canvas { max-height: 280px; }
   #err { color: #ff6b6b; font-size: 13px; margin-bottom: 16px; }
+  #mapSvg { width: 100%; height: 420px; }
+  #mapSvg .state { fill: #1a1d27; stroke: #2a2e3a; stroke-width: 0.7; }
+  #mapSvg circle { fill: #4f7cff; fill-opacity: 0.75; stroke: #0f1117; stroke-width: 1; }
+  #mapSvg circle:hover { fill: #ff9f43; }
+  .map-note { font-size: 12px; color: #9aa0a6; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -26,26 +36,134 @@
 
   <div class="grid" id="summaryCards"></div>
 
+  <h2>Outcomes &amp; Sentiment</h2>
   <div class="charts">
     <div class="chart-card"><h3>Outcome Breakdown</h3><canvas id="outcomeChart"></canvas></div>
     <div class="chart-card"><h3>Sentiment Breakdown</h3><canvas id="sentimentChart"></canvas></div>
+    <div class="chart-card"><h3>Carrier Eligibility</h3><canvas id="eligibilityChart"></canvas></div>
     <div class="chart-card"><h3>Decline Reasons</h3><canvas id="declineChart"></canvas></div>
-    <div class="chart-card"><h3>Rate: Loadboard vs. Final Agreed</h3><canvas id="rateChart"></canvas></div>
+  </div>
+
+  <h2>Loads &amp; Pricing</h2>
+  <div class="charts">
+    <div class="chart-card"><h3>Equipment Type Mix</h3><canvas id="equipmentChart"></canvas></div>
+    <div class="chart-card"><h3>Avg. Rate by Equipment Type</h3><canvas id="rateByEquipmentChart"></canvas></div>
+    <div class="chart-card"><h3>Loadboard vs. Final Agreed Rate</h3><canvas id="rateChart"></canvas></div>
+    <div class="chart-card"><h3>Negotiation Rounds Distribution</h3><canvas id="negotiationChart"></canvas></div>
+  </div>
+
+  <h2>Volume &amp; Geography</h2>
+  <div class="charts">
+    <div class="chart-card wide"><h3>Calls Over Time</h3><canvas id="callsOverTimeChart"></canvas></div>
+    <div class="chart-card"><h3>Top Pickup Cities</h3><canvas id="originChart"></canvas></div>
+    <div class="chart-card"><h3>Top Destination Cities</h3><canvas id="destinationChart"></canvas></div>
+    <div class="chart-card wide">
+      <h3>Most Called-About Pickup Locations (USA)</h3>
+      <svg id="mapSvg" viewBox="0 0 960 600"></svg>
+      <div class="map-note">Circle size reflects number of calls referencing that pickup city. Cities not recognized in the map's city lookup still appear in the "Top Pickup Cities" chart.</div>
+    </div>
   </div>
 
 <script>
+// ---------------------------------------------------------------------
+// Approximate coordinates [lon, lat] for major US freight hub cities.
+// Lookup is case-insensitive against normalized origin city names.
+// ---------------------------------------------------------------------
+const CITY_COORDS = {
+  "new york": [-74.006, 40.7128], "los angeles": [-118.2437, 34.0522], "chicago": [-87.6298, 41.8781],
+  "houston": [-95.3698, 29.7604], "phoenix": [-112.0740, 33.4484], "philadelphia": [-75.1652, 39.9526],
+  "san antonio": [-98.4936, 29.4241], "san diego": [-117.1611, 32.7157], "dallas": [-96.7970, 32.7767],
+  "san jose": [-121.8863, 37.3382], "austin": [-97.7431, 30.2672], "jacksonville": [-81.6557, 30.3322],
+  "fort worth": [-97.3308, 32.7555], "columbus": [-82.9988, 39.9612], "charlotte": [-80.8431, 35.2271],
+  "san francisco": [-122.4194, 37.7749], "indianapolis": [-86.1581, 39.7684], "seattle": [-122.3321, 47.6062],
+  "denver": [-104.9903, 39.7392], "washington": [-77.0369, 38.9072], "boston": [-71.0589, 42.3601],
+  "el paso": [-106.4850, 31.7619], "nashville": [-86.7816, 36.1627], "detroit": [-83.0458, 42.3314],
+  "oklahoma city": [-97.5164, 35.4676], "portland": [-122.6765, 45.5231], "las vegas": [-115.1398, 36.1699],
+  "memphis": [-90.0490, 35.1495], "louisville": [-85.7585, 38.2527], "baltimore": [-76.6122, 39.2904],
+  "milwaukee": [-87.9065, 43.0389], "albuquerque": [-106.6504, 35.0844], "tucson": [-110.9747, 32.2226],
+  "fresno": [-119.7871, 36.7378], "sacramento": [-121.4944, 38.5816], "kansas city": [-94.5786, 39.0997],
+  "mesa": [-111.8315, 33.4152], "atlanta": [-84.3880, 33.7490], "omaha": [-95.9345, 41.2565],
+  "colorado springs": [-104.8214, 38.8339], "raleigh": [-78.6382, 35.7796], "miami": [-80.1918, 25.7617],
+  "long beach": [-118.1937, 33.7701], "virginia beach": [-75.9780, 36.8529], "oakland": [-122.2712, 37.8044],
+  "minneapolis": [-93.2650, 44.9778], "tulsa": [-95.9928, 36.1540], "tampa": [-82.4572, 27.9506],
+  "arlington": [-97.1081, 32.7357], "new orleans": [-90.0715, 29.9511], "wichita": [-97.3301, 37.6872],
+  "cleveland": [-81.6944, 41.4993], "bakersfield": [-119.0187, 35.3733], "aurora": [-104.8319, 39.7294],
+  "anaheim": [-117.9143, 33.8366], "santa ana": [-117.8677, 33.7455], "riverside": [-117.3961, 33.9533],
+  "corpus christi": [-97.3964, 27.8006], "lexington": [-84.5037, 38.0406], "stockton": [-121.2908, 37.9577],
+  "henderson": [-114.9817, 36.0395], "saint paul": [-93.0900, 44.9537], "st paul": [-93.0900, 44.9537],
+  "st louis": [-90.1994, 38.6270], "saint louis": [-90.1994, 38.6270], "cincinnati": [-84.5120, 39.1031],
+  "pittsburgh": [-79.9959, 40.4406], "greensboro": [-79.7920, 36.0726], "anchorage": [-149.9003, 61.2181],
+  "plano": [-96.6989, 33.0198], "lincoln": [-96.6852, 40.8136], "orlando": [-81.3792, 28.5383],
+  "irvine": [-117.8265, 33.6846], "newark": [-74.1724, 40.7357], "toledo": [-83.5379, 41.6528],
+  "durham": [-78.8986, 35.9940], "chula vista": [-117.0842, 32.6401], "fort wayne": [-85.1394, 41.0793],
+  "jersey city": [-74.0776, 40.7178], "st petersburg": [-82.6403, 27.7676], "laredo": [-99.5075, 27.5306],
+  "madison": [-89.4012, 43.0731], "chandler": [-111.8413, 33.3062], "buffalo": [-78.8784, 42.8864],
+  "lubbock": [-101.8552, 33.5779], "scottsdale": [-111.9261, 33.4942], "reno": [-119.8138, 39.5296],
+  "glendale": [-112.1860, 33.5387], "gilbert": [-111.7890, 33.3528], "winston salem": [-80.2442, 36.0999],
+  "norfolk": [-76.2859, 36.8508], "chesapeake": [-76.2875, 36.7682], "garland": [-96.6389, 32.9126],
+  "irving": [-96.9489, 32.8140], "hialeah": [-80.2781, 25.8576], "fremont": [-121.9886, 37.5485],
+  "boise": [-116.2023, 43.6150], "richmond": [-77.4360, 37.5407], "baton rouge": [-91.1871, 30.4515],
+  "spokane": [-117.4260, 47.6588], "des moines": [-93.6091, 41.5868], "tacoma": [-122.4443, 47.2529],
+  "san bernardino": [-117.2898, 34.1083], "modesto": [-120.9969, 37.6391], "birmingham": [-86.8025, 33.5186],
+  "rochester": [-77.6109, 43.1566], "salt lake city": [-111.8910, 40.7608], "grand rapids": [-85.6681, 42.9634],
+  "amarillo": [-101.8313, 35.1991], "huntsville": [-86.5861, 34.7304], "little rock": [-92.2896, 34.7465],
+  "knoxville": [-83.9207, 35.9606], "shreveport": [-93.7502, 32.5252], "jackson": [-90.1848, 32.2988],
+  "columbia": [-81.0348, 34.0007], "savannah": [-81.0912, 32.0809], "chattanooga": [-85.3097, 35.0456]
+};
+
 let charts = {};
 
 function destroyChart(id) {
   if (charts[id]) { charts[id].destroy(); delete charts[id]; }
 }
 
-function renderBarChart(canvasId, labels, data, colors) {
+const PALETTE = ['#4f7cff','#ff9f43','#ff6b6b','#8e8e93','#a55eea','#26de81','#54a0ff','#feca57','#1dd1a1','#ff9ff3'];
+
+function renderBarChart(canvasId, labels, data, colors, horizontal) {
   destroyChart(canvasId);
   const ctx = document.getElementById(canvasId).getContext('2d');
   charts[canvasId] = new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: {
+      indexAxis: horizontal ? 'y' : 'x',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#cfd3da' }, grid: { color: '#2a2e3a' }, beginAtZero: true },
+        y: { ticks: { color: '#cfd3da' }, grid: { color: '#2a2e3a' }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function renderPieChart(canvasId, labels, data, colors) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  charts[canvasId] = new Chart(ctx, {
+    type: 'pie',
+    data: { labels, datasets: [{ data, backgroundColor: colors }] },
+    options: {
+      plugins: { legend: { position: 'bottom', labels: { color: '#cfd3da' } } }
+    }
+  });
+}
+
+function renderLineChart(canvasId, labels, data) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: '#4f7cff',
+        backgroundColor: 'rgba(79,124,255,0.15)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3
+      }]
+    },
     options: {
       plugins: { legend: { display: false } },
       scales: {
@@ -58,6 +176,54 @@ function renderBarChart(canvasId, labels, data, colors) {
 
 function card(label, value) {
   return `<div class="card"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+}
+
+let mapInitialized = false;
+let mapProjection = null;
+
+async function renderMap(topOriginCities) {
+  const svg = d3.select('#mapSvg');
+
+  if (!mapInitialized) {
+    const us = await d3.json('https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json');
+    const states = topojson.feature(us, us.objects.states);
+    mapProjection = d3.geoAlbersUsa().fitSize([960, 600], states);
+    const path = d3.geoPath().projection(mapProjection);
+
+    svg.selectAll('path.state')
+      .data(states.features)
+      .enter()
+      .append('path')
+      .attr('class', 'state')
+      .attr('d', path);
+
+    mapInitialized = true;
+  }
+
+  svg.selectAll('circle').remove();
+
+  const entries = Object.entries(topOriginCities || {});
+  const maxCount = Math.max(1, ...entries.map(([, c]) => c));
+
+  const points = entries
+    .map(([city, count]) => {
+      const coords = CITY_COORDS[city.toLowerCase()];
+      if (!coords) return null;
+      const projected = mapProjection(coords);
+      if (!projected) return null;
+      return { city, count, x: projected[0], y: projected[1] };
+    })
+    .filter(Boolean);
+
+  svg.selectAll('circle')
+    .data(points)
+    .enter()
+    .append('circle')
+    .attr('cx', d => d.x)
+    .attr('cy', d => d.y)
+    .attr('r', d => 4 + (d.count / maxCount) * 18)
+    .append('title')
+    .text(d => `${d.city}: ${d.count} call${d.count === 1 ? '' : 's'}`);
 }
 
 async function loadMetrics() {
@@ -74,46 +240,54 @@ async function loadMetrics() {
 
     document.getElementById('summaryCards').innerHTML = [
       card('Total Calls', m.total_calls),
+      card('Unique Carriers', m.unique_carriers),
       card('Booking Rate', m.booking_rate_pct + '%'),
       card('Eligibility Rate', m.eligibility_rate_pct + '%'),
       card('Avg. Negotiation Rounds', m.avg_negotiation_rounds ? m.avg_negotiation_rounds.toFixed(1) : '—'),
       card('Avg. Call Duration', m.avg_call_duration_seconds ? Math.round(m.avg_call_duration_seconds) + 's' : '—'),
+      card('Avg. Loadboard Rate', m.avg_loadboard_rate ? '$' + Math.round(m.avg_loadboard_rate) : '—'),
+      card('Avg. Savings / Booked Load', m.avg_savings_per_booked_load != null ? '$' + Math.round(m.avg_savings_per_booked_load) : '—'),
     ].join('');
 
-    const outcomeLabels = Object.keys(m.outcome_breakdown || {});
-    const outcomeData = Object.values(m.outcome_breakdown || {});
-    renderBarChart('outcomeChart', outcomeLabels, outcomeData,
-      ['#4f7cff','#ff9f43','#ff6b6b','#8e8e93','#a55eea','#26de81','#54a0ff']);
+    renderBarChart('outcomeChart',
+      Object.keys(m.outcome_breakdown || {}), Object.values(m.outcome_breakdown || {}), PALETTE);
 
-    const sentimentLabels = Object.keys(m.sentiment_breakdown || {});
-    const sentimentData = Object.values(m.sentiment_breakdown || {});
-    renderBarChart('sentimentChart', sentimentLabels, sentimentData,
-      ['#26de81','#8e8e93','#ff6b6b']);
+    renderPieChart('sentimentChart',
+      Object.keys(m.sentiment_breakdown || {}), Object.values(m.sentiment_breakdown || {}),
+      ['#26de81', '#8e8e93', '#ff6b6b']);
 
-    const declineLabels = Object.keys(m.decline_reasons || {});
-    const declineData = Object.values(m.decline_reasons || {});
-    renderBarChart('declineChart', declineLabels, declineData,
-      ['#ff9f43','#ff6b6b','#a55eea','#54a0ff']);
+    renderPieChart('eligibilityChart',
+      ['Eligible', 'Ineligible'], [m.eligible_calls || 0, m.ineligible_calls || 0],
+      ['#26de81', '#ff6b6b']);
 
-    destroyChart('rateChart');
-    const ctx = document.getElementById('rateChart').getContext('2d');
-    charts['rateChart'] = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: ['Avg. Loadboard Rate', 'Avg. Final Agreed Rate'],
-        datasets: [{
-          data: [m.avg_loadboard_rate || 0, m.avg_final_agreed_rate || 0],
-          backgroundColor: ['#4f7cff', '#26de81']
-        }]
-      },
-      options: {
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { color: '#cfd3da' }, grid: { color: '#2a2e3a' } },
-          y: { ticks: { color: '#cfd3da' }, grid: { color: '#2a2e3a' }, beginAtZero: true }
-        }
-      }
-    });
+    renderBarChart('declineChart',
+      Object.keys(m.decline_reasons || {}), Object.values(m.decline_reasons || {}), PALETTE);
+
+    renderPieChart('equipmentChart',
+      Object.keys(m.equipment_breakdown || {}), Object.values(m.equipment_breakdown || {}), PALETTE);
+
+    const rateByEquip = m.avg_rate_by_equipment || {};
+    renderBarChart('rateByEquipmentChart',
+      Object.keys(rateByEquip), Object.values(rateByEquip), PALETTE);
+
+    renderBarChart('rateChart',
+      ['Avg. Loadboard Rate', 'Avg. Final Agreed Rate'],
+      [m.avg_loadboard_rate || 0, m.avg_final_agreed_rate || 0],
+      ['#4f7cff', '#26de81']);
+
+    const negDist = m.negotiation_round_distribution || {};
+    renderBarChart('negotiationChart', Object.keys(negDist), Object.values(negDist), PALETTE);
+
+    const byDay = m.calls_by_day || [];
+    renderLineChart('callsOverTimeChart', byDay.map(d => d.date), byDay.map(d => d.count));
+
+    const origins = Object.entries(m.top_origin_cities || {}).slice(0, 10);
+    renderBarChart('originChart', origins.map(o => o[0]), origins.map(o => o[1]), PALETTE, true);
+
+    const destinations = Object.entries(m.top_destination_cities || {}).slice(0, 10);
+    renderBarChart('destinationChart', destinations.map(d => d[0]), destinations.map(d => d[1]), PALETTE, true);
+
+    await renderMap(m.top_origin_cities);
 
   } catch (e) {
     errEl.textContent = 'Failed to load metrics: ' + e.message;
@@ -121,7 +295,7 @@ async function loadMetrics() {
 }
 
 loadMetrics();
-setInterval(loadMetrics, 30000); // refresh every 30s
+setInterval(loadMetrics, 30000);
 </script>
 </body>
 </html>
