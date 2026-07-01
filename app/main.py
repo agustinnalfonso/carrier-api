@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import create_engine, Column, String, Numeric, Integer, Text, DateTime, cast
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
 from typing import Optional
 import os
@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy import Boolean, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 
 
 load_dotenv()
@@ -28,7 +29,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
-
+    
 class Load(Base):
     __tablename__ = "loads"
     load_id           = Column(String(20), primary_key=True)
@@ -117,7 +118,21 @@ class CallIn(BaseModel):
     outcome_reason: Optional[str] = None
     sentiment: Optional[str] = None
     sentiment_reason: Optional[str] = None
-    
+
+    @field_validator(
+        "run_id", "call_duration_seconds", "mc_number", "carrier_name",
+        "carrier_eligible", "load_id", "origin", "destination",
+        "equipment_type", "loadboard_rate", "carrier_first_offer",
+        "final_agreed_rate", "negotiation_rounds", "decline_reason",
+        "outcome", "outcome_reason", "sentiment", "sentiment_reason",
+        mode="before"
+    )
+    @classmethod
+    def blank_to_none(cls, v):
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
     class Config:
         from_attributes = True
 
