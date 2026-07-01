@@ -15,20 +15,13 @@
   .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
   .chart-card { background: #1a1d27; border: 1px solid #2a2e3a; border-radius: 10px; padding: 16px; }
   .chart-card h3 { margin: 0 0 12px 0; font-size: 14px; color: #cfd3da; }
-  #apiKeyBar { margin-bottom: 20px; display: flex; gap: 8px; align-items: center; }
-  #apiKeyBar input { flex: 1; max-width: 320px; padding: 8px 10px; border-radius: 6px; border: 1px solid #2a2e3a; background: #12141c; color: #e6e6e6; }
-  #apiKeyBar button { padding: 8px 14px; border-radius: 6px; border: none; background: #4f7cff; color: white; cursor: pointer; }
-  #err { color: #ff6b6b; font-size: 13px; margin-top: 8px; }
+  #err { color: #ff6b6b; font-size: 13px; margin-bottom: 16px; }
 </style>
 </head>
 <body>
   <h1>Carrier Sales — Call Metrics</h1>
   <div class="sub">Live metrics from the inbound carrier sales agent</div>
 
-  <div id="apiKeyBar">
-    <input id="apiKey" type="password" placeholder="X-API-Key" />
-    <button onclick="loadMetrics()">Load</button>
-  </div>
   <div id="err"></div>
 
   <div class="grid" id="summaryCards"></div>
@@ -68,14 +61,13 @@ function card(label, value) {
 }
 
 async function loadMetrics() {
-  const key = document.getElementById('apiKey').value;
   const errEl = document.getElementById('err');
   errEl.textContent = '';
 
   try {
-    const res = await fetch('/metrics', { headers: { 'X-API-Key': key } });
+    const res = await fetch('/dashboard/data');
     if (!res.ok) {
-      errEl.textContent = `Error ${res.status}: check your API key`;
+      errEl.textContent = `Error ${res.status}: could not load metrics`;
       return;
     }
     const m = await res.json();
@@ -127,6 +119,9 @@ async function loadMetrics() {
     errEl.textContent = 'Failed to load metrics: ' + e.message;
   }
 }
+
+loadMetrics();
+setInterval(loadMetrics, 30000); // refresh every 30s
 </script>
 </body>
 </html>
