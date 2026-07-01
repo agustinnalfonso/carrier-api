@@ -260,11 +260,14 @@ def compute_metrics(db: Session) -> dict:
     booked_calls = outcome_counts.get("Booked", 0)
     booking_rate = round((booked_calls / total_calls) * 100, 1) if total_calls else 0
 
+    eligible_calls = (
+        db.query(func.count(Call.id)).filter(Call.carrier_eligible == True).scalar() or 0
+    )
     ineligible_calls = (
         db.query(func.count(Call.id)).filter(Call.carrier_eligible == False).scalar() or 0
     )
     eligibility_rate = (
-        round(((total_calls - ineligible_calls) / total_calls) * 100, 1) if total_calls else 0
+        round((eligible_calls / total_calls) * 100, 1) if total_calls else 0
     )
 
     avg_duration = db.query(func.avg(Call.call_duration_seconds)).scalar()
@@ -283,17 +286,97 @@ def compute_metrics(db: Session) -> dict:
         .all()
     )
 
+    equipment_breakdown = dict(
+        db.query(Call.equipment_type, func.count(Call.id))
+        .filter(Call.equipment_type.isnot(None))
+        .group_by(Call.equipment_type)
+        .all()
+    )
+
+    # Normalize casing (Chicago / chicago / CHICAGO -> Chicago) so counts don't fragment
+    origin_rows = (
+        db.query(func.initcap(Call.origin), func.count(Call.id))
+        .filter(Call.origin.isnot(None))
+        .group_by(func.initcap(Call.origin))
+        .order_by(func.count(Call.id).desc())
+        .limit(30)
+        .all()
+    )
+    top_origin_cities = dict(origin_rows)
+
+    destination_rows = (
+        db.query(func.initcap(Call.destination), func.count(Call.id))
+        .filter(Call.destination.isnot(None))
+        .group_by(func.initcap(Call.destination))
+        .order_by(func.count(Call.id).desc())
+        .limit(10)
+        .all()
+    )
+    top_destination_cities = dict(destination_rows)
+
+    calls_by_day_rows = (
+        db.query(func.date(Call.created_at), func.count(Call.id))
+        .group_by(func.date(Call.created_at))
+        .order_by(func.date(Call.created_at))
+        .all()
+    )
+    calls_by_day = [{"date": str(d), "count": c} for d, c in calls_by_day_rows]
+
+    negotiation_round_rows = (
+        db.query(Call.negotiation_rounds, func.count(Call.id))
+        .filter(Call.negotiation_rounds.isnot(None))
+        .group_by(Call.negotiation_rounds)
+        .order_by(Call.negotiation_rounds)
+        .all()
+    )
+    negotiation_round_distribution = {str(r): c for r, c in negotiation_round_rows}
+
+    avg_rate_by_equipment_rows = (
+        db.query(Call.equipment_type, func.avg(Call.loadboard_rate))
+        .filter(Call.equipment_type.isnot(None), Call.loadboard_rate.isnot(None))
+        .group_by(Call.equipment_type)
+        .all()
+    )
+    avg_rate_by_equipment = {
+        eq: round(float(rate), 2) for eq, rate in avg_rate_by_equipment_rows
+    }
+
+    avg_savings = None
+    savings_val = (
+        db.query(func.avg(Call.loadboard_rate - Call.final_agreed_rate))
+        .filter(Call.final_agreed_rate.isnot(None), Call.loadboard_rate.isnot(None))
+        .scalar()
+    )
+    if savings_val is not None:
+        avg_savings = round(float(savings_val), 2)
+
+    unique_carriers = (
+        db.query(func.count(func.distinct(Call.mc_number)))
+        .filter(Call.mc_number.isnot(None))
+        .scalar()
+    ) or 0
+
     return {
         "total_calls": total_calls,
+        "unique_carriers": unique_carriers,
         "booking_rate_pct": booking_rate,
         "eligibility_rate_pct": eligibility_rate,
+        "eligible_calls": eligible_calls,
+        "ineligible_calls": ineligible_calls,
         "outcome_breakdown": outcome_counts,
         "sentiment_breakdown": sentiment_counts,
+        "equipment_breakdown": equipment_breakdown,
         "avg_call_duration_seconds": float(avg_duration) if avg_duration else None,
         "avg_negotiation_rounds": float(avg_negotiation_rounds) if avg_negotiation_rounds else None,
         "avg_loadboard_rate": float(avg_loadboard_rate) if avg_loadboard_rate else None,
         "avg_final_agreed_rate": float(avg_final_rate) if avg_final_rate else None,
+        "avg_savings_per_booked_load": avg_savings,
         "decline_reasons": decline_reasons,
+        "top_origin_cities": top_origin_cities,
+        "top_destination_cities": top_destination_cities,
+        "calls_by_day": calls_by_day,
+        "negotiation_round_distribution": negotiation_round_distribution,
+        "avg_rate_by_equipment": avg_rate_by_equipment,
     }
     
 @app.get("/dashboard", response_class=HTMLResponse)
